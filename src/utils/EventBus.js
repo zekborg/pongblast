@@ -1,5 +1,9 @@
 // /src/utils/EventBus.js
 import Phaser from 'phaser';
 
-// Simple shared event emitter for cross-scene/game systems.
-export default class EventBus extends Phaser.Events.EventEmitter {}
+// Simple typed event bus that works everywhere we use `on`/`emit`.
+export default class EventBus extends Phaser.Events.EventEmitter {
+  constructor() {
+    super();
+  }
+}

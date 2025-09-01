@@ -1,5 +1,5 @@
 // /src/scenes/UIScene.js
-// Minimal HUD: shows Player, Enemy, and Rally count.
+import Phaser from 'phaser';
 
 export default class UIScene extends Phaser.Scene {
   constructor() {
@@ -7,26 +7,46 @@ export default class UIScene extends Phaser.Scene {
   }
 
   init(data) {
-    this.bus = data.bus;
-    this.score = data.score; // ScoreManager
+    // Expect { bus, score }
+    this.bus = data?.bus ?? null;
+    this.score = data?.score ?? null;
   }
 
   create() {
     const { width } = this.scale;
 
-    this.text = this.add.text(
-      width / 2, 12,
-      this.formatLine({ player: 0, enemy: 0, rally: 0 }),
-      { fontFamily: 'Arial', fontSize: 16, color: '#ffffff' }
-    ).setOrigin(0.5, 0);
+    const totals = this.score?.getTotals?.() ?? { player: 0, enemy: 0, rally: 0 };
 
-    // update whenever scores/rally change
-    this.bus.on('score:changed', (state) => {
-      this.text.setText(this.formatLine(state));
+    // Single centered HUD line at the very top
+    this.hudText = this.add.text(width / 2, 10, this._fmt(totals.player, totals.enemy, totals.rally), {
+      fontFamily: 'Arial',
+      fontSize: 18,
+      color: '#ffffff',
+      stroke: '#000000',
+      strokeThickness: 3
+    })
+      .setOrigin(0.5, 0)     // centered horizontally, stick to top
+      .setScrollFactor(0)
+      .setDepth(2000);
+
+    // Live updates
+    this.bus?.on('score:changed', ({ player, enemy }) => {
+      const r = this.score?.getTotals?.().rally ?? 0;
+      this.hudText?.setText(this._fmt(player, enemy, r));
+    });
+
+    this.bus?.on('rally:changed', ({ rally }) => {
+      const t = this.score?.getTotals?.() ?? { player: 0, enemy: 0, rally: 0 };
+      this.hudText?.setText(this._fmt(t.player, t.enemy, rally));
+    });
+
+    // Keep centered on resize
+    this.scale.on('resize', (gameSize) => {
+      this.hudText?.setPosition(gameSize.width / 2, 10);
     });
   }
 
-  formatLine({ player, enemy, rally }) {
-    return `You: ${player}    Enemy: ${enemy}    Rally: ${rally}`;
+  _fmt(player, enemy, rally) {
+    return `You: ${player}   Enemy: ${enemy}   Rally: ${rally}`;
   }
 }

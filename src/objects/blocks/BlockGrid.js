@@ -10,7 +10,8 @@ export default class BlockGrid {
    *   cellW:number, cellH:number,
    *   originX:number, originY:number,
    *   owner:'player'|'enemy',
-   *   gap?:number
+   *   gap?:number,
+   *   bus?: Phaser.Events.EventEmitter
    * }} cfg
    */
   constructor(scene, cfg) {
@@ -23,6 +24,7 @@ export default class BlockGrid {
     this.originY = cfg.originY;
     this.owner = cfg.owner;
     this.gap = cfg.gap ?? 2;
+    this.bus = cfg.bus; // <-- shared event bus (for scoring emits)
 
     this.blocks = new Array(this.rows);
     for (let r = 0; r < this.rows; r++) this.blocks[r] = new Array(this.cols).fill(null);
@@ -47,7 +49,13 @@ export default class BlockGrid {
     this.blocks[row][col] = b;
 
     if (this.ball) {
-      this.scene.physics.add.collider(this.ball.node, b.node, () => b.onBallHit(this.ball), null, this);
+      this.scene.physics.add.collider(
+        this.ball.node,
+        b.node,
+        () => this._onBallHitsBlock(b, this.ball),
+        null,
+        this
+      );
     }
     return b;
   }
@@ -64,9 +72,36 @@ export default class BlockGrid {
       for (let c = 0; c < this.cols; c++) {
         const b = this.blocks[r][c];
         if (b) {
-          this.scene.physics.add.collider(ball.node, b.node, () => b.onBallHit(ball), null, this);
+          this.scene.physics.add.collider(
+            ball.node,
+            b.node,
+            () => this._onBallHitsBlock(b, ball),
+            null,
+            this
+          );
         }
       }
+    }
+  }
+
+  /**
+   * Unified collision handler so we can emit scoring events and let Block handle HP/visuals.
+   * @param {Block} block
+   * @param {{ node: Phaser.GameObjects.GameObject, lastHitBy: 'player'|'enemy'|null }} ball
+   */
+  _onBallHitsBlock(block, ball) {
+    // Award +1 for a hit to whoever last hit the ball (hitter), if known
+    const by = ball?.lastHitBy ?? null;
+    if (by && this.bus) {
+      this.bus.emit('block:hit', { owner: this.owner, by });
+    }
+
+    // Let the block apply damage & visuals; get whether it was destroyed
+    const destroyed = block.onBallHit(ball) === true;
+
+    // If destroyed this frame, award an additional +3 to the same hitter
+    if (destroyed && by && this.bus) {
+      this.bus.emit('block:destroyed', { owner: this.owner, by });
     }
   }
 }
