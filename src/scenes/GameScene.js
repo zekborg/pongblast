@@ -15,29 +15,35 @@ export default class GameScene extends Phaser.Scene {
   create() {
     const { width, height } = this.scale;
 
-    // --- Systems: bus + score + HUD scene ---
+    // --- Systems: ONE bus + ONE score manager
     this.bus = new EventBus();
-    this.score = new ScoreManager(this.bus);
+    this.score = new ScoreManager(this.bus); // emits initial state
+
+    // HUD
     if (!this.scene.get('UIScene')) {
       this.scene.add('UIScene', UIScene, true, { bus: this.bus, score: this.score });
     } else {
       this.scene.launch('UIScene', { bus: this.bus, score: this.score });
     }
 
-    // Center label + dotted midline
+    // Center label
     this.add.text(width / 2, height / 2, 'PongBlast — Ready', {
       fontFamily: 'Arial', fontSize: 28, color: '#ffffff'
     }).setOrigin(0.5);
 
+    // Dotted midline
     const g = this.add.graphics();
     g.lineStyle(2, 0xffffff, 0.35);
     for (let y = 0; y < height; y += 16) g.lineBetween(width / 2, y, width / 2, y + 8);
 
-    this.add.text(12, 8, 'Slice: rally awards +1 on midline cross (Space to serve; ↑/↓ to move)', {
+    // Bottom instructions
+    this.add.text(width / 2, height - 20, 'Space: serve   |   ↑/↓: move', {
       fontFamily: 'Arial', fontSize: 14, color: '#cccccc'
-    });
+    })
+      .setOrigin(0.5, 1)
+      .setDepth(10);
 
-    // --- Grid layout (3 cols × 5 rows) behind paddles ---
+    // --- Grid layout (3 cols × 5 rows) behind paddles
     const rows = 5, cols = 3;
     const edgeInset = 18, marginY = 8, gap = 2;
     const cellW = 40;
@@ -62,10 +68,10 @@ export default class GameScene extends Phaser.Scene {
     this.player.node.setDepth(100);
     this.enemy.node.setDepth(100);
 
-    // Ball
-    this.ball = new Ball(this, width / 2, height / 2);
+    // Ball (pass the shared bus)
+    this.ball = new Ball(this, width / 2, height / 2, this.bus);
 
-    // Paddle collisions (also attribute last hitter + rally)
+    // Colliders: NO angle/edge tweaking—let physics be uniform.
     this.physics.add.collider(
       this.ball.node,
       this.player.node,
@@ -81,7 +87,7 @@ export default class GameScene extends Phaser.Scene {
       this
     );
 
-    // Grids (pass bus so block hits/destroys score)
+    // Grids
     this.playerGrid = new BlockGrid(this, {
       cols, rows, cellW, cellH, originX: leftOriginX,  originY: leftOriginY,  owner: 'player', gap, bus: this.bus
     });
@@ -98,77 +104,50 @@ export default class GameScene extends Phaser.Scene {
     // Input
     this.cursors = this.input.keyboard.createCursorKeys();
     this.keySpace = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
-
-    // Rally + midline tracking
-    this.rallyCount = 0;
-    this.prevBallX = this.ball.node.x; // for midline crossing detection
   }
 
   onBallHitsPaddle(paddle) {
-    // Aim based on impact point along the paddle
-    const diff = (this.ball.node.y - paddle.node.y) / (paddle.node.height / 2); // -1..1
-    const v = new Phaser.Math.Vector2(
-      this.ball.body.velocity.x,
-      this.ball.body.velocity.y
-    );
-    v.y += diff * 140;
-    this.ball.body.setVelocity(v.x, v.y);
+    // Estimate paddle vertical velocity if available; else 0
+    const paddleVelY = paddle.node.body?.velocity?.y ?? 0;
 
-    // Attribute hitter & update rally counter
-    this.ball.lastHitBy = (paddle === this.player) ? 'player' : 'enemy';
-    this.rallyCount++;
-    this.bus.emit('rally:changed', { rally: this.rallyCount });
+    // Uniform paddle face: pass "0" for impactOffset (ignored in Ball)
+    const side = (paddle === this.player) ? 'player' : 'enemy';
+    this.ball.onPaddleContact(side, 0, paddleVelY);
 
-    // Speed ratchet
+    // Keep speed progression spicy but uniform
     this.ball.ratchetSpeed();
   }
 
-  update(_, dtMs) {
+  update(time, dtMs) {
     const dt = dtMs / 1000;
-    const { width } = this.scale;
-    const mid = width / 2;
 
     // Serve
     if (this.ball.state === 'serve' && Phaser.Input.Keyboard.JustDown(this.keySpace)) {
       const dir = Phaser.Math.Between(0, 1) === 0 ? 'left' : 'right';
       this.ball.serve(dir);
-      this.rallyCount = 0;
-      this.bus.emit('rally:changed', { rally: this.rallyCount });
-      this.prevBallX = this.ball.node.x;
+      this.score.resetRally(); // clear rally tally at (re)serve
     }
 
     // Player control
-    let dir = 0;
-    if (this.cursors.up.isDown) dir = -1;
-    else if (this.cursors.down.isDown) dir = 1;
-    this.player.move(dir, dt);
+    let dirY = 0;
+    if (this.cursors.up.isDown) dirY = -1;
+    else if (this.cursors.down.isDown) dirY = 1;
+    this.player.move(dirY, dt);
 
     // Simple AI
     if (this.ball.state === 'live' && this.ball.body.velocity.x > 0) {
       this.enemy.follow(this.ball.node.y, dt, 0.8);
     }
 
-    // Award rally points on midline crossings to whoever LAST hit the ball
-    if (this.ball.state === 'live') {
-      const x = this.ball.node.x;
-      const crossedFromLeft  = this.prevBallX <  mid && x >= mid;
-      const crossedFromRight = this.prevBallX >  mid && x <= mid;
+    // Drive Ball's spin + rally logic
+    this.ball.update?.(time, dtMs);
 
-      if ((crossedFromLeft || crossedFromRight) && this.ball.lastHitBy) {
-        this.score.award(this.ball.lastHitBy, 1); // emits 'score:changed' via ScoreManager
-      }
-      this.prevBallX = x;
-    }
-
-    // Out-of-bounds (we keep emitting rally reset, but scoring for OOB is disabled per your request)
+    // Out-of-bounds: reset and clear rally
     const x = this.ball.node.x;
     const w = this.scale.width;
     if (this.ball.state === 'live' && (x < -10 || x > w + 10)) {
-      // If you later want OOB to score or end the round, handle it here.
       this.ball.resetToCenter();
-      this.rallyCount = 0;
-      this.bus.emit('rally:changed', { rally: this.rallyCount });
-      this.prevBallX = this.ball.node.x;
+      this.score.resetRally();
     }
   }
 }

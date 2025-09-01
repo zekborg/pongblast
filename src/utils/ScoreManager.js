@@ -1,57 +1,93 @@
 // /src/utils/ScoreManager.js
-// Listens to bus events and updates scores; emits 'score:changed' for the HUD.
+// Centralized scoring + rally tally.
+// Listens on the shared bus and emits updates for the HUD.
+//
+// Inbound events handled:
+//   - 'rally:midline'     { by: 'player'|'enemy' }   -> award(by, +1), rally += 1
+//   - 'block:hit'         { owner, by }              -> award(by, +1)        (no rally change)
+//   - 'block:destroyed'   { owner, by }              -> award(by, +3)        (no rally change)
+//
+// Outbound events emitted:
+//   - 'score:changed'     { player, enemy }
+//   - 'rally:changed'     { rally }
 
 export default class ScoreManager {
   /**
-   * @param {import('./EventBus').default} bus
+   * @param {Phaser.Events.EventEmitter} bus
    */
   constructor(bus) {
     this.bus = bus;
-    this.playerScore = 0;
-    this.enemyScore = 0;
+
+    // Core totals
+    this.player = 0;
+    this.enemy = 0;
+
+    // Rally tally (display-only aggregate of successful rally awards)
     this.rally = 0;
 
-    // events from gameplay
-    bus.on('block:hit',        this.onBlockHit,        this);
-    bus.on('block:destroyed',  this.onBlockDestroyed,  this);
-    bus.on('ball:out',         this.onBallOut,         this);
-    bus.on('rally:changed',    this.onRallyChanged,    this);
+    // Wire listeners
+    if (this.bus) {
+      // Rally awards: paddle-hit → midline-cross
+      this.bus.on('rally:midline', ({ by }) => {
+        if (!by) return;
+        this.award(by, 1);
+        this.rally += 1;
+        this.bus.emit('rally:changed', { rally: this.rally });
+      });
+
+      // Block scoring (from BlockGrid)
+      // "by" = hitter (side who last hit the ball)
+      this.bus.on('block:hit', ({ owner, by }) => {
+        if (!by) return;
+        this.award(by, 1);
+      });
+
+      this.bus.on('block:destroyed', ({ owner, by }) => {
+        if (!by) return;
+        this.award(by, 3);
+      });
+
+      // Emit initial state so HUD doesn't show undefined
+      this.bus.emit('score:changed', { player: this.player, enemy: this.enemy });
+      this.bus.emit('rally:changed', { rally: this.rally });
+    }
   }
 
-  award(to, pts) {
-    if (to === 'player') this.playerScore += pts;
-    else if (to === 'enemy') this.enemyScore += pts;
-    this.emitUpdate();
-  }
+  /**
+   * Award points to a side and notify UI.
+   * @param {'player'|'enemy'} side
+   * @param {number} amount
+   */
+  award(side, amount = 1) {
+    if (side === 'player') this.player += amount;
+    else if (side === 'enemy') this.enemy += amount;
 
-  onBlockHit({ owner }) {
-    // Hitting ENEMY block awards the opposite side (attacker).
-    // owner is the side that OWNS the block that got hit.
-    if (owner === 'enemy') this.award('player', 1);
-    else if (owner === 'player') this.award('enemy', 1);
-  }
-
-  onBlockDestroyed({ owner }) {
-    if (owner === 'enemy') this.award('player', 3);
-    else if (owner === 'player') this.award('enemy', 3);
-  }
-
-  onBallOut({ side }) {
-    // side is which wall it went past: 'left' => player missed; enemy scores.
-    if (side === 'left') this.award('enemy', 1);
-    else if (side === 'right') this.award('player', 1);
-  }
-
-  onRallyChanged({ rally }) {
-    this.rally = rally;
-    this.emitUpdate();
-  }
-
-  emitUpdate() {
-    this.bus.emit('score:changed', {
-      player: this.playerScore,
-      enemy: this.enemyScore,
-      rally: this.rally,
+    this.bus?.emit('score:changed', {
+      player: this.player,
+      enemy: this.enemy
     });
+  }
+
+  /** Reset only the rally tally (not the scores). */
+  resetRally() {
+    this.rally = 0;
+    this.bus?.emit('rally:changed', { rally: this.rally });
+  }
+
+  /** Hard reset: scores + rally. */
+  resetAll() {
+    this.player = 0;
+    this.enemy = 0;
+    this.rally = 0;
+    this.bus?.emit('score:changed', { player: this.player, enemy: this.enemy });
+    this.bus?.emit('rally:changed', { rally: this.rally });
+  }
+
+  getTotals() {
+    return {
+      player: this.player,
+      enemy: this.enemy,
+      rally: this.rally
+    };
   }
 }
